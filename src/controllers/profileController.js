@@ -29,8 +29,18 @@ const updateProfile = async (req, res) => {
 
         const data = { name, email };
 
-        if (req.file && isCloudinaryConfigured) {
-            data.avatar = req.file.path;
+        if (req.file) {
+            console.log('File received in updateProfile:', req.file);
+            console.log('Cloudinary Configured:', isCloudinaryConfigured);
+
+            if (isCloudinaryConfigured) {
+                data.avatar = req.file.path;
+                console.log('Setting data.avatar to:', data.avatar);
+            } else {
+                console.warn('Cloudinary not configured, skipping avatar update.');
+            }
+        } else {
+            console.log('No file received in updateProfile request body.');
         }
 
         const updatedUser = await prisma.user.update({
