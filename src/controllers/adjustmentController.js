@@ -10,7 +10,8 @@ const getAdjustments = async (req, res) => {
                 warehouse: true,
                 inventoryadjustmentitem: {
                     include: {
-                        product: true
+                        product: true,
+                        warehouse: true
                     }
                 }
             },
@@ -41,7 +42,8 @@ const getAdjustmentById = async (req, res) => {
                 warehouse: true,
                 inventoryadjustmentitem: {
                     include: {
-                        product: true
+                        product: true,
+                        warehouse: true
                     }
                 }
             }
@@ -62,32 +64,35 @@ const createAdjustment = async (req, res) => {
             manualVoucherNo,
             date,
             type, // ADD_STOCK, REMOVE_STOCK, ADJUST_VALUE
-            warehouseId,
+            warehouseId, // This will now serve as a default/header warehouse
             note,
             totalValue,
             items
         } = req.body;
 
-        if (!voucherNo || !type || !warehouseId || !items || items.length === 0) {
+        if (!voucherNo || !type || !items || items.length === 0) {
             return res.status(400).json({ success: false, message: 'Required fields are missing' });
         }
 
         const result = await prisma.$transaction(async (tx) => {
             // 1. Create adjustment record
+            // Use the first item's warehouseId if header warehouseId is not provided
+            const headerWarehouseId = warehouseId ? parseInt(warehouseId) : parseInt(items[0].warehouseId);
+
             const adjustment = await tx.inventoryadjustment.create({
                 data: {
                     voucherNo,
                     manualVoucherNo,
                     date: date ? new Date(date) : new Date(),
                     type,
-                    warehouseId: parseInt(warehouseId),
+                    warehouseId: headerWarehouseId,
                     note,
                     totalValue: parseFloat(totalValue || 0),
                     companyId: parseInt(companyId),
                     inventoryadjustmentitem: {
                         create: items.map(item => ({
                             productId: parseInt(item.productId),
-                            warehouseId: parseInt(warehouseId), // Uses the main warehouse for adjustment
+                            warehouseId: parseInt(item.warehouseId || headerWarehouseId),
                             quantity: parseFloat(item.quantity || 0),
                             rate: parseFloat(item.rate || 0),
                             amount: parseFloat(item.amount || 0),
@@ -102,26 +107,15 @@ const createAdjustment = async (req, res) => {
             for (const item of items) {
                 const qty = parseFloat(item.quantity || 0);
                 const productId = parseInt(item.productId);
-                const whId = parseInt(warehouseId);
+                const whId = parseInt(item.warehouseId || headerWarehouseId);
 
                 if (type === 'ADD_STOCK') {
-                    // Increment Stock
                     await tx.stock.upsert({
-                        where: {
-                            warehouseId_productId: {
-                                warehouseId: whId,
-                                productId: productId
-                            }
-                        },
+                        where: { warehouseId_productId: { warehouseId: whId, productId: productId } },
                         update: { quantity: { increment: qty } },
-                        create: {
-                            warehouseId: whId,
-                            productId: productId,
-                            quantity: qty
-                        }
+                        create: { warehouseId: whId, productId: productId, quantity: qty }
                     });
 
-                    // Log Transaction
                     await tx.inventorytransaction.create({
                         data: {
                             productId: productId,
@@ -133,32 +127,19 @@ const createAdjustment = async (req, res) => {
                         }
                     });
                 } else if (type === 'REMOVE_STOCK') {
-                    // Check availability
                     const currentStock = await tx.stock.findUnique({
-                        where: {
-                            warehouseId_productId: {
-                                warehouseId: whId,
-                                productId: productId
-                            }
-                        }
+                        where: { warehouseId_productId: { warehouseId: whId, productId: productId } }
                     });
 
                     if (!currentStock || currentStock.quantity < qty) {
-                        throw new Error(`Insufficient stock for product ID ${productId} in selected warehouse`);
+                        throw new Error(`Insufficient stock for product ID ${productId} in warehouse ID ${whId}`);
                     }
 
-                    // Decrement Stock
                     await tx.stock.update({
-                        where: {
-                            warehouseId_productId: {
-                                warehouseId: whId,
-                                productId: productId
-                            }
-                        },
+                        where: { warehouseId_productId: { warehouseId: whId, productId: productId } },
                         data: { quantity: { decrement: qty } }
                     });
 
-                    // Log Transaction
                     await tx.inventorytransaction.create({
                         data: {
                             productId: productId,
@@ -169,24 +150,10 @@ const createAdjustment = async (req, res) => {
                             companyId: parseInt(companyId)
                         }
                     });
-                } else if (type === 'ADJUST_VALUE') {
-                    // Only log transaction or update value if we had a value field in Stock
-                    // For now, just log the transaction as a reason
-                    await tx.inventorytransaction.create({
-                        data: {
-                            productId: productId,
-                            toWarehouseId: whId,
-                            quantity: 0,
-                            type: 'ADJUSTMENT',
-                            reason: `Value Adjustment: ${voucherNo}. ${item.narration || ''}`,
-                            companyId: parseInt(companyId)
-                        }
-                    });
                 }
             }
 
-            // 3. Accounting Integration (GL Posting)
-            // Find relevant ledgers
+            // 3. Accounting Integration
             const inventoryAsset = await tx.ledger.findFirst({
                 where: { companyId: parseInt(companyId), name: 'Inventory Asset' }
             });
@@ -195,7 +162,7 @@ const createAdjustment = async (req, res) => {
             });
             const salesIncome = await tx.ledger.findFirst({
                 where: { companyId: parseInt(companyId), name: 'Sales Income' }
-            }); // Fallback for Add Stock if no specific gain account
+            });
 
             if (inventoryAsset) {
                 let debitLedgerId, creditLedgerId;
@@ -223,7 +190,6 @@ const createAdjustment = async (req, res) => {
                         }
                     });
 
-                    // Update Ledger Balances
                     await tx.ledger.update({
                         where: { id: debitLedgerId },
                         data: { currentBalance: { increment: totalAmt } }
@@ -269,34 +235,22 @@ const deleteAdjustment = async (req, res) => {
             for (const item of adjustment.inventoryadjustmentitem) {
                 const qty = item.quantity;
                 const productId = item.productId;
-                const whId = adjustment.warehouseId;
+                const whId = item.warehouseId;
 
                 if (adjustment.type === 'ADD_STOCK') {
-                    // Decrement what we added
                     await tx.stock.update({
-                        where: {
-                            warehouseId_productId: {
-                                warehouseId: whId,
-                                productId: productId
-                            }
-                        },
+                        where: { warehouseId_productId: { warehouseId: whId, productId: productId } },
                         data: { quantity: { decrement: qty } }
                     });
                 } else if (adjustment.type === 'REMOVE_STOCK') {
-                    // Increment what we removed
                     await tx.stock.update({
-                        where: {
-                            warehouseId_productId: {
-                                warehouseId: whId,
-                                productId: productId
-                            }
-                        },
+                        where: { warehouseId_productId: { warehouseId: whId, productId: productId } },
                         data: { quantity: { increment: qty } }
                     });
                 }
             }
 
-            // Reverse Accounting Integration (GL Posting)
+            // Reverse Accounting
             const transactions = await tx.transaction.findMany({
                 where: {
                     companyId: parseInt(adjustment.companyId),
@@ -306,7 +260,6 @@ const deleteAdjustment = async (req, res) => {
             });
 
             for (const trans of transactions) {
-                // Reverse Ledger Balances
                 await tx.ledger.update({
                     where: { id: trans.debitLedgerId },
                     data: { currentBalance: { decrement: trans.amount } }
@@ -315,17 +268,19 @@ const deleteAdjustment = async (req, res) => {
                     where: { id: trans.creditLedgerId },
                     data: { currentBalance: { increment: trans.amount } }
                 });
-
-                // Delete the transaction
-                await tx.transaction.delete({
-                    where: { id: trans.id }
-                });
+                await tx.transaction.delete({ where: { id: trans.id } });
             }
 
-            // Delete Adjustment (cascades to items)
-            await tx.inventoryadjustment.delete({
-                where: { id: parseInt(id) }
+            // Delete inventory transactions
+            await tx.inventorytransaction.deleteMany({
+                where: {
+                    companyId: parseInt(companyId),
+                    reason: { startsWith: `Adjustment` },
+                    AND: { reason: { contains: adjustment.voucherNo } }
+                }
             });
+
+            await tx.inventoryadjustment.delete({ where: { id: parseInt(id) } });
         });
 
         res.status(200).json({ success: true, message: 'Adjustment deleted and stock reversed' });
@@ -335,9 +290,169 @@ const deleteAdjustment = async (req, res) => {
     }
 };
 
+// Update Adjustment
+const updateAdjustment = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const companyId = req.user.companyId;
+        const {
+            voucherNo, manualVoucherNo, date, type, note, totalValue, items
+        } = req.body;
+
+        const result = await prisma.$transaction(async (tx) => {
+            // 1. Get old adjustment
+            const oldAdj = await tx.inventoryadjustment.findUnique({
+                where: { id: parseInt(id) },
+                include: { inventoryadjustmentitem: true }
+            });
+
+            if (!oldAdj) throw new Error('Adjustment not found');
+
+            // 2. Reverse OLD Stock
+            for (const item of oldAdj.inventoryadjustmentitem) {
+                if (oldAdj.type === 'ADD_STOCK') {
+                    await tx.stock.update({
+                        where: { warehouseId_productId: { warehouseId: item.warehouseId, productId: item.productId } },
+                        data: { quantity: { decrement: item.quantity } }
+                    });
+                } else if (oldAdj.type === 'REMOVE_STOCK') {
+                    await tx.stock.update({
+                        where: { warehouseId_productId: { warehouseId: item.warehouseId, productId: item.productId } },
+                        data: { quantity: { increment: item.quantity } }
+                    });
+                }
+            }
+
+            // 3. Reverse OLD Accounting
+            const oldTransactions = await tx.transaction.findMany({
+                where: { companyId: parseInt(companyId), voucherNumber: oldAdj.voucherNo, voucherType: 'JOURNAL' }
+            });
+            for (const trans of oldTransactions) {
+                await tx.ledger.update({
+                    where: { id: trans.debitLedgerId },
+                    data: { currentBalance: { decrement: trans.amount } }
+                });
+                await tx.ledger.update({
+                    where: { id: trans.creditLedgerId },
+                    data: { currentBalance: { increment: trans.amount } }
+                });
+                await tx.transaction.delete({ where: { id: trans.id } });
+            }
+
+            // 4. Delete old items and transactions
+            await tx.inventoryadjustmentitem.deleteMany({ where: { inventoryAdjustmentId: parseInt(id) } });
+            await tx.inventorytransaction.deleteMany({
+                where: {
+                    companyId: parseInt(companyId),
+                    reason: { contains: oldAdj.voucherNo }
+                }
+            });
+
+            // 5. Update Header & Create New Items
+            const headerWarehouseId = parseInt(items[0].warehouseId);
+            const updatedAdj = await tx.inventoryadjustment.update({
+                where: { id: parseInt(id) },
+                data: {
+                    manualVoucherNo,
+                    date: date ? new Date(date) : new Date(),
+                    type,
+                    warehouseId: headerWarehouseId,
+                    note,
+                    totalValue: parseFloat(totalValue || 0),
+                    inventoryadjustmentitem: {
+                        create: items.map(item => ({
+                            productId: parseInt(item.productId),
+                            warehouseId: parseInt(item.warehouseId),
+                            quantity: parseFloat(item.quantity || 0),
+                            rate: parseFloat(item.rate || 0),
+                            amount: parseFloat(item.amount || 0),
+                            narration: item.narration
+                        }))
+                    }
+                }
+            });
+
+            // 6. Apply NEW Stock
+            for (const item of items) {
+                const qty = parseFloat(item.quantity || 0);
+                const productId = parseInt(item.productId);
+                const whId = parseInt(item.warehouseId);
+
+                if (type === 'ADD_STOCK') {
+                    await tx.stock.upsert({
+                        where: { warehouseId_productId: { warehouseId: whId, productId: productId } },
+                        update: { quantity: { increment: qty } },
+                        create: { warehouseId: whId, productId: productId, quantity: qty }
+                    });
+                    await tx.inventorytransaction.create({
+                        data: {
+                            productId: productId,
+                            toWarehouseId: whId,
+                            quantity: qty,
+                            type: 'ADJUSTMENT',
+                            reason: `Adjustment (Add-Updated): ${voucherNo}. ${item.narration || ''}`,
+                            companyId: parseInt(companyId)
+                        }
+                    });
+                } else if (type === 'REMOVE_STOCK') {
+                    await tx.stock.update({
+                        where: { warehouseId_productId: { warehouseId: whId, productId: productId } },
+                        data: { quantity: { decrement: qty } }
+                    });
+                    await tx.inventorytransaction.create({
+                        data: {
+                            productId: productId,
+                            fromWarehouseId: whId,
+                            quantity: qty,
+                            type: 'ADJUSTMENT',
+                            reason: `Adjustment (Remove-Updated): ${voucherNo}. ${item.narration || ''}`,
+                            companyId: parseInt(companyId)
+                        }
+                    });
+                }
+            }
+
+            // 7. Apply NEW Accounting
+            const inventoryAsset = await tx.ledger.findFirst({ where: { companyId: parseInt(companyId), name: 'Inventory Asset' } });
+            const adjExpense = await tx.ledger.findFirst({ where: { companyId: parseInt(companyId), name: 'Inventory Adjustment Expense' } });
+            const salesIncome = await tx.ledger.findFirst({ where: { companyId: parseInt(companyId), name: 'Sales Income' } });
+
+            if (inventoryAsset) {
+                let debitLedgerId, creditLedgerId;
+                const totalAmt = parseFloat(totalValue || 0);
+                if (type === 'ADD_STOCK' && salesIncome) {
+                    debitLedgerId = inventoryAsset.id; creditLedgerId = salesIncome.id;
+                } else if (type === 'REMOVE_STOCK' && adjExpense) {
+                    debitLedgerId = adjExpense.id; creditLedgerId = inventoryAsset.id;
+                }
+                if (debitLedgerId && creditLedgerId && totalAmt > 0) {
+                    await tx.transaction.create({
+                        data: {
+                            date: date ? new Date(date) : new Date(),
+                            debitLedgerId, creditLedgerId, amount: totalAmt,
+                            narration: `Inventory Adjustment (${type}-Updated): ${voucherNo}. ${note || ''}`,
+                            voucherType: 'JOURNAL', voucherNumber: voucherNo, companyId: parseInt(companyId)
+                        }
+                    });
+                    await tx.ledger.update({ where: { id: debitLedgerId }, data: { currentBalance: { increment: totalAmt } } });
+                    await tx.ledger.update({ where: { id: creditLedgerId }, data: { currentBalance: { decrement: totalAmt } } });
+                }
+            }
+
+            return updatedAdj;
+        });
+
+        res.status(200).json({ success: true, message: 'Adjustment updated successfully', data: result });
+    } catch (error) {
+        console.error('Error updating adjustment:', error);
+        res.status(500).json({ success: false, message: error.message });
+    }
+};
+
 module.exports = {
     getAdjustments,
     getAdjustmentById,
     createAdjustment,
-    deleteAdjustment
+    deleteAdjustment,
+    updateAdjustment
 };

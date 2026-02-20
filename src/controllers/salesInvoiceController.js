@@ -115,6 +115,16 @@ const createInvoice = async (req, res) => {
                     totalAmount,
                     balanceAmount: totalAmount,
                     notes,
+                    billingName: req.body.billingName,
+                    billingAddress: req.body.billingAddress,
+                    billingCity: req.body.billingCity,
+                    billingState: req.body.billingState,
+                    billingZipCode: req.body.billingZipCode,
+                    shippingName: req.body.shippingName,
+                    shippingAddress: req.body.shippingAddress,
+                    shippingCity: req.body.shippingCity,
+                    shippingState: req.body.shippingState,
+                    shippingZipCode: req.body.shippingZipCode,
                     invoiceitem: {
                         create: invoiceItems.map(i => ({
                             productId: i.productId,
@@ -372,18 +382,103 @@ const updateInvoice = async (req, res) => {
     try {
         const { id } = req.params;
         const { items, ...data } = req.body;
+        const companyId = req.user?.companyId || req.body.companyId;
 
-        // This is a simplified update that updates basic fields.
-        // Full update with inventory/ledger reversal handling requires more complex logic.
-        const invoice = await prisma.invoice.update({
+        if (!companyId) {
+            return res.status(400).json({ success: false, message: 'Company ID is missing' });
+        }
+
+        // 1. Get existing invoice
+        const existingInvoice = await prisma.invoice.findFirst({
+            where: { id: parseInt(id), companyId: parseInt(companyId) },
+            include: { invoiceitem: true }
+        });
+
+        if (!existingInvoice) {
+            return res.status(404).json({ success: false, message: 'Invoice not found' });
+        }
+
+        // 2. Calculate new totals if items are provided
+        let subtotal = existingInvoice.subtotal;
+        let totalDiscount = existingInvoice.discountAmount;
+        let taxAmount = existingInvoice.taxAmount;
+        let totalAmount = existingInvoice.totalAmount;
+
+        let invoiceItemsData = undefined;
+
+        if (items) {
+            subtotal = 0;
+            totalDiscount = 0;
+            let lineTaxSum = 0;
+
+            invoiceItemsData = items.map(item => {
+                const itemQty = parseFloat(item.quantity) || 0;
+                const itemRate = parseFloat(item.rate) || 0;
+                const itemDiscount = parseFloat(item.discount) || 0;
+                const itemTaxRate = parseFloat(item.taxRate) || 0;
+
+                const lineGross = itemQty * itemRate;
+                const lineTaxable = lineGross - itemDiscount;
+                const lineTax = (lineTaxable * itemTaxRate) / 100;
+                const lineTotal = lineTaxable + lineTax;
+
+                subtotal += lineGross;
+                totalDiscount += itemDiscount;
+                lineTaxSum += lineTax;
+
+                return {
+                    productId: item.productId ? parseInt(item.productId) : null,
+                    serviceId: item.serviceId ? parseInt(item.serviceId) : null,
+                    description: item.description || 'Sales Item',
+                    quantity: itemQty,
+                    rate: itemRate,
+                    discount: itemDiscount,
+                    amount: lineTotal,
+                    taxRate: itemTaxRate,
+                    warehouseId: item.warehouseId ? parseInt(item.warehouseId) : null
+                };
+            });
+
+            taxAmount = parseFloat(req.body.taxAmount) || lineTaxSum;
+            totalAmount = (subtotal - totalDiscount) + taxAmount;
+        }
+
+        // 3. Update Invoice
+        const updatedInvoice = await prisma.invoice.update({
             where: { id: parseInt(id) },
             data: {
-                notes: data.notes,
+                invoiceNumber: data.invoiceNumber,
+                date: data.date ? new Date(data.date) : undefined,
                 dueDate: data.dueDate ? new Date(data.dueDate) : undefined,
-                // Add more fields as needed
+                customerId: data.customerId ? parseInt(data.customerId) : undefined,
+                notes: data.notes,
+                subtotal,
+                discountAmount: totalDiscount,
+                taxAmount,
+                totalAmount,
+                balanceAmount: totalAmount - (existingInvoice.paidAmount || 0),
+                billingName: data.billingName,
+                billingAddress: data.billingAddress,
+                billingCity: data.billingCity,
+                billingState: data.billingState,
+                billingZipCode: data.billingZipCode,
+                shippingName: data.shippingName,
+                shippingAddress: data.shippingAddress,
+                shippingCity: data.shippingCity,
+                shippingState: data.shippingState,
+                shippingZipCode: data.shippingZipCode,
+                invoiceitem: items ? {
+                    deleteMany: {},
+                    create: invoiceItemsData
+                } : undefined
             }
         });
-        res.status(200).json({ success: true, data: invoice });
+
+        // Note: Reversing accounting entries and stock changes on update is complex.
+        // For now, we update the invoice record itself. 
+        // In a full implementation, you would reverse the old journal/stock and create new ones.
+
+        res.status(200).json({ success: true, data: updatedInvoice });
     } catch (error) {
         res.status(500).json({ success: false, message: error.message });
     }

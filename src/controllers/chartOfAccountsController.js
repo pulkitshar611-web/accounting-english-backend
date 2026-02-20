@@ -25,8 +25,9 @@ const initializeCOA = async (req, res) => {
 const getChartOfAccounts = async (req, res) => {
     try {
         const companyId = req.user.companyId;
+        const { startDate, endDate, search } = req.query;
 
-        const chartOfAccounts = await chartOfAccountsService.getChartOfAccounts(companyId);
+        const chartOfAccounts = await chartOfAccountsService.getChartOfAccounts(companyId, { startDate, endDate, search });
 
         res.status(200).json({
             success: true,

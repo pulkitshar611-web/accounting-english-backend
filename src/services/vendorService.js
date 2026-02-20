@@ -32,10 +32,9 @@ const createVendor = async (data) => {
                 }
             });
 
-            // Auto-create Ledger for Vendor
             const ledger = await tx.ledger.create({
                 data: {
-                    name: data.companyName || data.name,
+                    name: data.name,
                     groupId: accountsPayableSubGroup.groupId,
                     subGroupId: accountsPayableSubGroup.id,
                     companyId: data.companyId,
@@ -150,11 +149,11 @@ const updateVendor = async (id, data) => {
             }
         });
 
-        // Update ledger name if company name changed
-        if (data.companyName && vendor.ledgerId) {
+        // Update ledger name if vendor name changed
+        if (data.name && vendor.ledgerId) {
             await prisma.ledger.update({
                 where: { id: vendor.ledgerId },
-                data: { name: data.companyName }
+                data: { name: data.name }
             });
         }
 

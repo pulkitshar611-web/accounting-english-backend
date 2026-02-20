@@ -146,7 +146,13 @@ const getChallans = async (req, res) => {
         const challans = await prisma.deliverychallan.findMany({
             where: { companyId: parseInt(companyId) },
             include: {
-                customer: { select: { name: true, email: true } },
+                customer: {
+                    select: {
+                        name: true, email: true, phone: true,
+                        billingName: true, billingPhone: true, billingAddress: true, billingCity: true, billingState: true, billingZipCode: true,
+                        shippingName: true, shippingPhone: true, shippingAddress: true, shippingCity: true, shippingState: true, shippingZipCode: true
+                    }
+                },
                 deliverychallanitem: { include: { product: true, warehouse: true } },
                 salesorder: {
                     include: { salesorderitem: true }

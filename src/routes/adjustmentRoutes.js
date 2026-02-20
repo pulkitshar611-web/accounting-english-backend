@@ -6,6 +6,7 @@ const { authenticateToken } = require('../middlewares/authMiddleware');
 router.get('/', authenticateToken, adjustmentController.getAdjustments);
 router.get('/:id', authenticateToken, adjustmentController.getAdjustmentById);
 router.post('/', authenticateToken, adjustmentController.createAdjustment);
+router.put('/:id', authenticateToken, adjustmentController.updateAdjustment);
 router.delete('/:id', authenticateToken, adjustmentController.deleteAdjustment);
 
 module.exports = router;

@@ -33,10 +33,9 @@ const createCustomer = async (data) => {
                 }
             });
 
-            // Auto-create Ledger for Customer
             const ledger = await tx.ledger.create({
                 data: {
-                    name: data.companyName || data.name,
+                    name: data.name,
                     groupId: accountsReceivableSubGroup.groupId,
                     subGroupId: accountsReceivableSubGroup.id,
                     companyId: data.companyId,
@@ -151,11 +150,11 @@ const updateCustomer = async (id, data) => {
             }
         });
 
-        // Update ledger name if company name changed
-        if (data.companyName && customer.ledgerId) {
+        // Update ledger name if customer name changed
+        if (data.name && customer.ledgerId) {
             await prisma.ledger.update({
                 where: { id: customer.ledgerId },
-                data: { name: data.companyName }
+                data: { name: data.name }
             });
         }
 

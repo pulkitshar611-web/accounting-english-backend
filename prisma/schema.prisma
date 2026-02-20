@@ -427,6 +427,16 @@ model invoice {
   createdAt         DateTime         @default(now())
   updatedAt         DateTime         @default(now()) @updatedAt
   deliveryChallanId Int?
+  billingName       String?
+  billingAddress    String?          @db.Text
+  billingCity       String?
+  billingState      String?
+  billingZipCode    String?
+  shippingName      String?
+  shippingAddress   String?          @db.Text
+  shippingCity      String?
+  shippingState     String?
+  shippingZipCode   String?
   company           company          @relation(fields: [companyId], references: [id], onDelete: Cascade, map: "Invoice_companyId_fkey")
   customer          customer         @relation(fields: [customerId], references: [id], map: "Invoice_customerId_fkey")
   deliverychallan   deliverychallan? @relation(fields: [deliveryChallanId], references: [id], map: "Invoice_deliveryChallanId_fkey")
@@ -508,6 +518,8 @@ model ledger {
   transaction_transaction_debitLedgerIdToledger  transaction[]    @relation("transaction_debitLedgerIdToledger")
   voucher_paidFromLedger                         voucher[]        @relation("voucher_paidFromLedger")
   voucher_paidToLedger                           voucher[]        @relation("voucher_paidToLedger")
+  receipt_CashBankAccount                        receipt[]        @relation("Receipt_CashBankAccount")
+  payment_CashBankAccount                        payment[]        @relation("Payment_CashBankAccount")
 
   @@unique([companyId, name], map: "Ledger_companyId_name_key")
   @@index([groupId], map: "Ledger_groupId_fkey")
@@ -530,26 +542,29 @@ model passwordrequest {
 }
 
 model payment {
-  id              Int                 @id @default(autoincrement())
-  paymentNumber   String
-  date            DateTime            @default(now())
-  vendorId        Int
-  purchaseBillId  Int?
-  amount          Float
-  paymentMode     payment_paymentMode
-  referenceNumber String?
-  companyId       Int
-  notes           String?             @db.Text
-  createdAt       DateTime            @default(now())
-  updatedAt       DateTime            @default(now()) @updatedAt
-  company         company             @relation(fields: [companyId], references: [id], onDelete: Cascade, map: "Payment_companyId_fkey")
-  purchasebill    purchasebill?       @relation(fields: [purchaseBillId], references: [id], map: "Payment_purchaseBillId_fkey")
-  vendor          vendor              @relation(fields: [vendorId], references: [id], map: "Payment_vendorId_fkey")
-  transaction     transaction[]
+  id                Int                 @id @default(autoincrement())
+  paymentNumber     String
+  date              DateTime            @default(now())
+  vendorId          Int
+  purchaseBillId    Int?
+  amount            Float
+  paymentMode       payment_paymentMode
+  referenceNumber   String?
+  companyId         Int
+  cashBankAccountId Int?
+  notes             String?             @db.Text
+  createdAt         DateTime            @default(now())
+  updatedAt         DateTime            @default(now()) @updatedAt
+  company           company             @relation(fields: [companyId], references: [id], onDelete: Cascade, map: "Payment_companyId_fkey")
+  purchasebill      purchasebill?       @relation(fields: [purchaseBillId], references: [id], map: "Payment_purchaseBillId_fkey")
+  vendor            vendor              @relation(fields: [vendorId], references: [id], map: "Payment_vendorId_fkey")
+  bankLedger        ledger?             @relation("Payment_CashBankAccount", fields: [cashBankAccountId], references: [id], map: "Payment_cashBankAccountId_fkey")
+  transaction       transaction[]
 
   @@unique([companyId, paymentNumber], map: "Payment_companyId_paymentNumber_key")
   @@index([purchaseBillId], map: "Payment_purchaseBillId_fkey")
   @@index([vendorId], map: "Payment_vendorId_fkey")
+  @@index([cashBankAccountId], map: "Payment_cashBankAccountId_fkey")
 }
 
 model paymentrecord {
@@ -901,12 +916,14 @@ model receipt {
   paymentMode     receipt_paymentMode
   referenceNumber String?
   companyId       Int
+  cashBankAccountId Int?
   notes           String?             @db.Text
   createdAt       DateTime            @default(now())
   updatedAt       DateTime            @default(now()) @updatedAt
   company         company             @relation(fields: [companyId], references: [id], onDelete: Cascade, map: "Receipt_companyId_fkey")
   customer        customer            @relation(fields: [customerId], references: [id], map: "Receipt_customerId_fkey")
   invoice         invoice?            @relation(fields: [invoiceId], references: [id], map: "Receipt_invoiceId_fkey")
+  cashBankAccount ledger?             @relation("Receipt_CashBankAccount", fields: [cashBankAccountId], references: [id], map: "Receipt_cashBankAccountId_fkey")
   transaction     transaction[]
 
   @@unique([companyId, receiptNumber], map: "Receipt_companyId_receiptNumber_key")

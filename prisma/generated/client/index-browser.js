@@ -398,7 +398,17 @@ exports.Prisma.InvoiceScalarFieldEnum = {
   notes: 'notes',
   createdAt: 'createdAt',
   updatedAt: 'updatedAt',
-  deliveryChallanId: 'deliveryChallanId'
+  deliveryChallanId: 'deliveryChallanId',
+  billingName: 'billingName',
+  billingAddress: 'billingAddress',
+  billingCity: 'billingCity',
+  billingState: 'billingState',
+  billingZipCode: 'billingZipCode',
+  shippingName: 'shippingName',
+  shippingAddress: 'shippingAddress',
+  shippingCity: 'shippingCity',
+  shippingState: 'shippingState',
+  shippingZipCode: 'shippingZipCode'
 };
 
 exports.Prisma.InvoiceitemScalarFieldEnum = {
@@ -464,6 +474,7 @@ exports.Prisma.PaymentScalarFieldEnum = {
   paymentMode: 'paymentMode',
   referenceNumber: 'referenceNumber',
   companyId: 'companyId',
+  cashBankAccountId: 'cashBankAccountId',
   notes: 'notes',
   createdAt: 'createdAt',
   updatedAt: 'updatedAt'
@@ -711,6 +722,7 @@ exports.Prisma.ReceiptScalarFieldEnum = {
   paymentMode: 'paymentMode',
   referenceNumber: 'referenceNumber',
   companyId: 'companyId',
+  cashBankAccountId: 'cashBankAccountId',
   notes: 'notes',
   createdAt: 'createdAt',
   updatedAt: 'updatedAt'

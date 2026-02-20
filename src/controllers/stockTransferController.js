@@ -108,19 +108,17 @@ const createStockTransfer = async (req, res) => {
                 const fromWH = parseInt(item.fromWarehouseId);
                 const toWH = parseInt(toWarehouseId);
 
-                // a. Check source stock
-                const sourceStock = await tx.stock.findUnique({
-                    where: { warehouseId_productId: { warehouseId: fromWH, productId: pid } }
-                });
-
-                if (!sourceStock || sourceStock.quantity < qty) {
-                    throw new Error(`Insufficient stock for product ID ${pid} in warehouse ID ${fromWH}`);
-                }
-
-                // b. Decrement from source
-                await tx.stock.update({
+                // a. Update source stock (Allowing negative)
+                await tx.stock.upsert({
                     where: { warehouseId_productId: { warehouseId: fromWH, productId: pid } },
-                    data: { quantity: { decrement: qty } }
+                    update: { quantity: { decrement: qty } },
+                    create: {
+                        warehouseId: fromWH,
+                        productId: pid,
+                        quantity: -qty,
+                        initialQty: 0,
+                        minOrderQty: 0
+                    }
                 });
 
                 // c. Increment at destination
@@ -171,10 +169,6 @@ const deleteStockTransfer = async (req, res) => {
             return res.status(400).json({ success: false, message: 'Company ID is required' });
         }
 
-        // Before deleting, we might want to reverse the stock changes
-        // But for standard implementations, we often don't allow deletion of processed vouchers
-        // Let's implement a hard delete but with stock reversal logic for completeness
-
         await prisma.$transaction(async (tx) => {
             const transfer = await tx.stocktransfer.findFirst({
                 where: {
@@ -201,9 +195,6 @@ const deleteStockTransfer = async (req, res) => {
                 });
             }
 
-            // Delete inventory transactions linked to this voucher (by matching narration/reason usually, or we'd need a direct link)
-            // Since we don't have a direct link in InventoryTransaction model yet, we can either add it or rely on business logic.
-            // Let's just delete the transfer record and its items (cascade handles items)
             await tx.stocktransfer.delete({ where: { id: parseInt(id) } });
         });
 
@@ -214,9 +205,137 @@ const deleteStockTransfer = async (req, res) => {
     }
 };
 
+// Update Stock Transfer
+const updateStockTransfer = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const companyId = req.user.companyId;
+        const {
+            voucherNo, manualVoucherNo, date, toWarehouseId, narration, items
+        } = req.body;
+
+        if (!toWarehouseId || !items || items.length === 0) {
+            return res.status(400).json({ success: false, message: 'Invalid stock transfer data' });
+        }
+
+        const totalAmount = items.reduce((acc, item) => acc + (parseFloat(item.rate || 0) * parseFloat(item.quantity)), 0);
+
+        const result = await prisma.$transaction(async (tx) => {
+            // 1. Get existing transfer and items
+            const oldTransfer = await tx.stocktransfer.findUnique({
+                where: { id: parseInt(id) },
+                include: { stocktransferitem: true }
+            });
+
+            if (!oldTransfer) throw new Error('Stock transfer not found');
+
+            // 2. Reverse OLD stock movements
+            for (const item of oldTransfer.stocktransferitem) {
+                // Return to original source
+                await tx.stock.update({
+                    where: { warehouseId_productId: { warehouseId: item.fromWarehouseId, productId: item.productId } },
+                    data: { quantity: { increment: item.quantity } }
+                });
+
+                // Remove from original destination
+                await tx.stock.update({
+                    where: { warehouseId_productId: { warehouseId: oldTransfer.toWarehouseId, productId: item.productId } },
+                    data: { quantity: { decrement: item.quantity } }
+                });
+            }
+
+            // 3. Delete old items and old inventory transactions (by voucher No preferably)
+            await tx.stocktransferitem.deleteMany({ where: { stockTransferId: parseInt(id) } });
+            await tx.inventorytransaction.deleteMany({
+                where: {
+                    companyId: parseInt(companyId),
+                    reason: { startsWith: `Voucher: ${oldTransfer.voucherNo}` }
+                }
+            });
+
+            // 4. Update Transfer Record
+            const updatedTransfer = await tx.stocktransfer.update({
+                where: { id: parseInt(id) },
+                data: {
+                    manualVoucherNo,
+                    date: date ? new Date(date) : new Date(),
+                    toWarehouseId: parseInt(toWarehouseId),
+                    narration,
+                    totalAmount,
+                    stocktransferitem: {
+                        create: items.map(item => ({
+                            productId: parseInt(item.productId),
+                            fromWarehouseId: parseInt(item.fromWarehouseId),
+                            quantity: parseFloat(item.quantity),
+                            rate: parseFloat(item.rate || 0),
+                            amount: parseFloat(item.rate || 0) * parseFloat(item.quantity),
+                            narration: item.narration
+                        }))
+                    }
+                }
+            });
+
+            // 5. Apply NEW stock movements
+            for (const item of items) {
+                const qty = parseFloat(item.quantity);
+                const pid = parseInt(item.productId);
+                const fromWH = parseInt(item.fromWarehouseId);
+                const toWH = parseInt(toWarehouseId);
+
+                // a. Update source stock (Allowing negative)
+                await tx.stock.upsert({
+                    where: { warehouseId_productId: { warehouseId: fromWH, productId: pid } },
+                    update: { quantity: { decrement: qty } },
+                    create: {
+                        warehouseId: fromWH,
+                        productId: pid,
+                        quantity: -qty,
+                        initialQty: 0,
+                        minOrderQty: 0
+                    }
+                });
+
+                // Increment at destination
+                await tx.stock.upsert({
+                    where: { warehouseId_productId: { warehouseId: toWH, productId: pid } },
+                    update: { quantity: { increment: qty } },
+                    create: {
+                        warehouseId: toWH,
+                        productId: pid,
+                        quantity: qty,
+                        initialQty: 0,
+                        minOrderQty: 0
+                    }
+                });
+
+                // Log New Inventory Transaction
+                await tx.inventorytransaction.create({
+                    data: {
+                        type: 'TRANSFER',
+                        productId: pid,
+                        fromWarehouseId: fromWH,
+                        toWarehouseId: toWH,
+                        quantity: qty,
+                        reason: `Voucher: ${oldTransfer.voucherNo} (Updated). ${item.narration || ''}`,
+                        companyId: parseInt(companyId)
+                    }
+                });
+            }
+
+            return updatedTransfer;
+        });
+
+        res.status(200).json({ success: true, message: 'Stock transfer updated successfully', data: result });
+    } catch (error) {
+        console.error('Error updating stock transfer:', error);
+        res.status(400).json({ success: false, message: error.message || 'Failed to update stock transfer' });
+    }
+};
+
 module.exports = {
     getStockTransfers,
     getStockTransferById,
     createStockTransfer,
-    deleteStockTransfer
+    deleteStockTransfer,
+    updateStockTransfer
 };

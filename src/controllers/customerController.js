@@ -36,7 +36,7 @@ const createCustomer = async (req, res) => {
         // Create Customer and Ledger in a transaction
         const result = await prisma.$transaction(async (tx) => {
             // Create Ledger first
-            const ledgerName = customerData.companyName || customerData.name;
+            const ledgerName = customerData.name;
             const ledger = await tx.ledger.create({
                 data: {
                     name: ledgerName,
@@ -276,9 +276,9 @@ const updateCustomer = async (req, res) => {
                 }
             });
 
-            // Update Ledger name if customer/company name changed
+            // Update Ledger name if customer name changed
             if (existingCustomer.ledgerId) {
-                const newLedgerName = customerData.companyName || customerData.name;
+                const newLedgerName = customerData.name;
                 await tx.ledger.update({
                     where: { id: existingCustomer.ledgerId },
                     data: {

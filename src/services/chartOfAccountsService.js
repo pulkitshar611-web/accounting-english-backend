@@ -209,14 +209,30 @@ const initializeChartOfAccounts = async (companyId) => {
 };
 
 // Get Chart of Accounts
-const getChartOfAccounts = async (companyId) => {
+const getChartOfAccounts = async (companyId, filters = {}) => {
     try {
+        const { startDate, endDate, search } = filters;
+
+        // Base filter for ledgers
+        const ledgerWhere = {
+            ...(search ? { name: { contains: search } } : {}),
+            ...(startDate || endDate ? {
+                createdAt: {
+                    ...(startDate ? { gte: new Date(startDate) } : {}),
+                    ...(endDate ? { lte: new Date(endDate) } : {})
+                }
+            } : {})
+        };
+
         const groups = await prisma.accountgroup.findMany({
             where: { companyId },
             include: {
                 accountsubgroup: {
                     include: {
                         ledger: {
+                            where: {
+                                ...ledgerWhere
+                            },
                             include: {
                                 ledger: true
                             }
@@ -225,7 +241,8 @@ const getChartOfAccounts = async (companyId) => {
                 },
                 ledger: {
                     where: {
-                        subGroupId: null
+                        subGroupId: null,
+                        ...ledgerWhere
                     },
                     include: {
                         ledger: true
